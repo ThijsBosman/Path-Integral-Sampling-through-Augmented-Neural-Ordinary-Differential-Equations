@@ -25,17 +25,18 @@ class ResidualBlock(nn.Module):
 class ANODE(nn.Module):
 
     num_hidden: int
+    n_blocks: int
     sample_dims: int
     aug_dims: int
-    n_blocks: int
 
-    T: float = 10.0
-    dt0: float = 0.1
+    prior_std: float = 1.0
+    T: float = 1.0
+    n_steps: int = 100
 
     def setup(self):
         self.linear1 = nn.Dense(self.num_hidden)
         self.residual_blocks = [ResidualBlock(self.num_hidden) for _ in range(self.n_blocks)]
-        self.linear2 = nn.Dense(self.sample_dims + self.aug_dims, kernel_init=nn.initializers.normal(0.001))
+        self.linear2 = nn.Dense(self.sample_dims + self.aug_dims, kernel_init=nn.initializers.normal(0.01))
 
     def __call__(self, t, phi):
         phi = self.linear1(phi)
@@ -56,8 +57,8 @@ class ANODE(nn.Module):
             logp (jax.numpy.ndarray): The log probability of the samples.
         """
 
-        samples = jax.random.normal(rng_key, shape=(n_samples, self.sample_dims + self.aug_dims))
-        logp = jax.scipy.stats.norm.logpdf(samples).sum(axis=1)
+        samples = jax.random.normal(rng_key, shape=(n_samples, self.sample_dims + self.aug_dims)) * self.prior_std
+        logp = jax.scipy.stats.norm.logpdf(samples, scale=self.prior_std).sum(axis=1)
 
         return samples, logp
 
@@ -98,10 +99,10 @@ class ANODE(nn.Module):
         x_samples = samples[:, :self.sample_dims]
         a_samples = samples[:, self.sample_dims:]
 
-        return x_samples, logp - jax.scipy.stats.norm.logpdf(a_samples).sum(axis=1)
+        return x_samples, logp - jax.scipy.stats.norm.logpdf(a_samples, scale=self.prior_std).sum(axis=1)
 
-    @partial(jax.jit, static_argnames=['self'])
-    def follow_flow(self, params, samples, logp):
+    @partial(jax.jit, static_argnames=['self', 'reverse'])
+    def follow_flow(self, params, samples, logp, reverse=False):
         """Follow the flow of the samples through the network.
 
         Args:
@@ -114,6 +115,9 @@ class ANODE(nn.Module):
             logp (jax.numpy.ndarray): The log probability of the samples after following the flow.
         """
 
+        t0 = 0.0 if not reverse else self.T
+        t1 = self.T if not reverse else 0.0
+
         # Create the ODE term and solver
         ode_term = ODETerm(self._vector_field)
         solver = Dopri5()
@@ -122,9 +126,9 @@ class ANODE(nn.Module):
         solution = diffeqsolve(
             ode_term,
             solver,
-            t0=0.0,
-            t1=self.T,
-            dt0=self.dt0,
+            t0=t0,
+            t1=t1,
+            dt0=(t1 - t0) / self.n_steps,
             y0=(samples, logp),
             args=params,
         )
@@ -142,44 +146,6 @@ class ANODE(nn.Module):
         div = jax.vmap(divergence(g))(phi)
 
         return (dphi_dt, -div)
-
-    def _inverse_vector_field(self, t, y, params):
-        """Defines the vector field for the inverse flow."""
-
-        phi = y
-        dphi_dt = -self.apply(params, self.T-t, phi)
-
-        return dphi_dt
-
-    @partial(jax.jit, static_argnames=['self'])
-    def inverse_follow_flow(self, params, samples):
-        """Follow the inverse flow of the samples through the network.
-
-        Args:
-            params (dict): The model's parameters.
-            samples (jax.numpy.ndarray): The samples to follow the inverse flow for.
-
-        Returns:
-            samples (jax.numpy.ndarray): The samples after following the inverse flow.
-            logp (jax.numpy.ndarray): The log probability of the samples after following the inverse flow.
-        """
-
-        # Create the ODE term and solver
-        ode_term = ODETerm(self._inverse_vector_field)
-        solver = Dopri5()
-
-        # Solve the ODE
-        solution = diffeqsolve(
-            ode_term,
-            solver,
-            t0=0.0,
-            t1=self.T,
-            dt0=self.dt0,
-            y0=samples,
-            args=params,
-        )
-
-        return solution.ys[0]
 
     @partial(jax.jit, static_argnames=['self'])
     def get_logp(self, params, samples, rng_key):
@@ -200,12 +166,7 @@ class ANODE(nn.Module):
         samples = jnp.concatenate([samples, a_samples], axis=-1)
 
         # Calculate the log probability of the samples
-        samples = self.inverse_follow_flow(params, samples)
-        logp = jax.scipy.stats.norm.logpdf(samples).sum(axis=1)
+        samples, logp = self.follow_flow(params, samples, jnp.zeros(samples.shape[0]), reverse=True)
+        return samples,  jax.scipy.stats.norm.logpdf(samples, scale=self.prior_std).sum(axis=1) - jax.scipy.stats.norm.logpdf(a_samples, scale=self.prior_std).sum(axis=1) - logp
 
-        samples, logp = self.follow_flow(params, samples, logp)
 
-        x_samples = samples[:, :self.sample_dims]
-        a_samples = samples[:, self.sample_dims:]
-
-        return x_samples, logp - jax.scipy.stats.norm.logpdf(a_samples).sum(axis=1)
