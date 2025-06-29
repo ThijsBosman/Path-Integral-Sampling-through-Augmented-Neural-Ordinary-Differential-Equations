@@ -161,10 +161,10 @@ class ANODE(nn.Module):
 
         # Append the augmented dimensions to the samples
         a_samples = jax.random.normal(rng_key, shape=(samples.shape[0], self.aug_dims))
-        samples = jnp.concatenate([samples, a_samples], axis=-1)
+        joint_samples = jnp.concatenate([samples, a_samples], axis=-1)
 
         # Calculate the log probability of the samples
-        samples, logp = self.follow_flow(params, samples, jnp.zeros(samples.shape[0]), reverse=True)
-        return samples[:, :self.sample_dims],  jax.scipy.stats.norm.logpdf(samples, scale=self.prior_std).sum(axis=1) - jax.scipy.stats.norm.logpdf(a_samples, scale=self.prior_std).sum(axis=1) - logp
+        joint_samples, logp = self.follow_flow(params, joint_samples, jnp.zeros(joint_samples.shape[0]), reverse=True)
+        return samples,  jax.scipy.stats.norm.logpdf(joint_samples, scale=self.prior_std).sum(axis=1) - jax.scipy.stats.norm.logpdf(a_samples, scale=self.prior_std).sum(axis=1) - logp
 
 
