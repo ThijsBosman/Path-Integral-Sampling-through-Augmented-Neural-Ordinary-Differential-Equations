@@ -38,7 +38,6 @@ class ANODE(nn.Module):
         self.out = nn.Dense(self.sample_dims + self.aug_dims, kernel_init=nn.initializers.normal(0.01))
 
     def __call__(self, t, phi):
-        # phi = self.linear1(phi)
         for block in self.residual_blocks:
             phi = block(t, phi)
         phi = self.out(phi)
