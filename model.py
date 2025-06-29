@@ -14,8 +14,8 @@ class ResidualBlock(nn.Module):
         self.dense2 = nn.Dense(self.features)
 
     def __call__(self, t, x):
-        residual = x
         y = self.dense1(x)
+        residual = y
         y = nn.elu(y)
         y = self.dense2(y)
         return residual + y
@@ -34,15 +34,14 @@ class ANODE(nn.Module):
     n_steps: int = 100
 
     def setup(self):
-        self.linear1 = nn.Dense(self.num_hidden)
         self.residual_blocks = [ResidualBlock(self.num_hidden) for _ in range(self.n_blocks)]
-        self.linear2 = nn.Dense(self.sample_dims + self.aug_dims, kernel_init=nn.initializers.normal(0.01))
+        self.out = nn.Dense(self.sample_dims + self.aug_dims, kernel_init=nn.initializers.normal(0.01))
 
     def __call__(self, t, phi):
-        phi = self.linear1(phi)
+        # phi = self.linear1(phi)
         for block in self.residual_blocks:
             phi = block(t, phi)
-        phi = self.linear2(phi)
+        phi = self.out(phi)
         return phi
 
     def get_prior_samples(self, rng_key, n_samples):
@@ -167,6 +166,6 @@ class ANODE(nn.Module):
 
         # Calculate the log probability of the samples
         samples, logp = self.follow_flow(params, samples, jnp.zeros(samples.shape[0]), reverse=True)
-        return samples,  jax.scipy.stats.norm.logpdf(samples, scale=self.prior_std).sum(axis=1) - jax.scipy.stats.norm.logpdf(a_samples, scale=self.prior_std).sum(axis=1) - logp
+        return samples[:, :self.sample_dims],  jax.scipy.stats.norm.logpdf(samples, scale=self.prior_std).sum(axis=1) - jax.scipy.stats.norm.logpdf(a_samples, scale=self.prior_std).sum(axis=1) - logp
 
 
